@@ -29,6 +29,8 @@
 				</c:choose>
 				<li><a href="<c:url value="/cart"/>"><span
 						class="glyphicon glyphicon-shopping-cart" aria-hidden="true"></span></a></li>
+				<li><a href="<c:url value="http://localhost:4200"/>"><span
+							aria-hidden="true">Privacy Rights</span></a></li>
 			</ul>
 		</div>
 	</div>

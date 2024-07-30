@@ -13,7 +13,13 @@
  */
 package tools.descartes.teastore.recommender.algorithm;
 
+import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,6 +27,7 @@ import java.util.Map;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
 
+import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,151 +41,187 @@ import tools.descartes.teastore.entities.OrderItem;
 
 /**
  * A strategy selector for the Recommender functionality.
- * 
+ *
  * @author Johannes Grohmann
  *
  */
 public final class RecommenderSelector implements IRecommender {
 
-	/**
-	 * This map lists all currently available recommending approaches and assigns
-	 * them their "name" for the environment variable.
-	 */
-	private static Map<String, Class<? extends IRecommender>> recommenders = new HashMap<>();
+    /**
+     * This map lists all currently available recommending approaches and
+     * assigns them their "name" for the environment variable.
+     */
+    private static Map<String, Class<? extends IRecommender>> recommenders = new HashMap<>();
 
-	static {
-		recommenders = new HashMap<String, Class<? extends IRecommender>>();
-		recommenders.put("Popularity", PopularityBasedRecommender.class);
-		recommenders.put("SlopeOne", SlopeOneRecommender.class);
-		recommenders.put("PreprocessedSlopeOne", PreprocessedSlopeOneRecommender.class);
-		recommenders.put("OrderBased", OrderBasedRecommender.class);
-	}
+    static {
+        recommenders = new HashMap<String, Class<? extends IRecommender>>();
+        recommenders.put("Popularity", PopularityBasedRecommender.class);
+        recommenders.put("SlopeOne", SlopeOneRecommender.class);
+        recommenders.put("PreprocessedSlopeOne", PreprocessedSlopeOneRecommender.class);
+        recommenders.put("OrderBased", OrderBasedRecommender.class);
+    }
 
-	/**
-	 * The default recommender to choose, if no other recommender was set.
-	 */
-	private static final Class<? extends IRecommender> DEFAULT_RECOMMENDER = SlopeOneRecommender.class;
+    /**
+     * The default recommender to choose, if no other recommender was set.
+     */
+    private static final Class<? extends IRecommender> DEFAULT_RECOMMENDER = SlopeOneRecommender.class;
 
-	private static final Logger LOG = LoggerFactory.getLogger(RecommenderSelector.class);
+    private static final Logger LOG = LoggerFactory.getLogger(RecommenderSelector.class);
 
-	private static RecommenderSelector instance;
+    private static RecommenderSelector instance;
 
-	private IRecommender fallbackrecommender;
+    private IRecommender fallbackrecommender;
 
-	private IRecommender recommender;
+    private IRecommender recommender;
 
-	/**
-	 * Private Constructor.
-	 */
-	private RecommenderSelector() {
-		fallbackrecommender = new PopularityBasedRecommender();
-		try {
-			String recommendername = (String) new InitialContext().lookup("java:comp/env/recommenderAlgorithm");
-			// if a specific algorithm is set, we can use that algorithm
-			if (recommenders.containsKey(recommendername)) {
-				try {
-					recommender = recommenders.get(recommendername).getDeclaredConstructor().newInstance();
-				} catch (IllegalArgumentException e) {
-					e.printStackTrace();
-				} catch (InvocationTargetException e) {
-					e.printStackTrace();
-				} catch (NoSuchMethodException e) {
-					e.printStackTrace();
-				} catch (SecurityException e) {
-					e.printStackTrace();
-				}
-			} else {
-				LOG.warn("Recommendername: " + recommendername
-						+ " was not found. Using default recommender (SlopeOneRecommeder).");
-				try {
-					recommender = DEFAULT_RECOMMENDER.getDeclaredConstructor().newInstance();
-				} catch (IllegalArgumentException e) {
-					e.printStackTrace();
-				} catch (InvocationTargetException e) {
-					e.printStackTrace();
-				} catch (NoSuchMethodException e) {
-					e.printStackTrace();
-				} catch (SecurityException e) {
-					e.printStackTrace();
-				}
-			}
-		} catch (InstantiationException | IllegalAccessException e) {
-			// if creating a new instance fails
-			e.printStackTrace();
-			LOG.warn("Could not create an instance of the requested recommender. Using fallback.");
-			recommender = fallbackrecommender;
-		} catch (NamingException e) {
-			// if nothing was set
-			LOG.info("Recommender not set. Using default recommender (SlopeOneRecommeder).");
-			try {
-				try {
-					recommender = DEFAULT_RECOMMENDER.getDeclaredConstructor().newInstance();
-				} catch (IllegalArgumentException e1) {
-					e1.printStackTrace();
-				} catch (InvocationTargetException e1) {
-					e1.printStackTrace();
-				} catch (NoSuchMethodException e1) {
-					e1.printStackTrace();
-				} catch (SecurityException e1) {
-					e1.printStackTrace();
-				}
-			} catch (InstantiationException | IllegalAccessException e1) {
-				// also the default algorithm could fail
-				e1.printStackTrace();
-				LOG.warn("Could not create an instance of DEFAULT_RECOMMENDER " + DEFAULT_RECOMMENDER.getName() + ".");
-				recommender = fallbackrecommender;
-			}
-		}
-	}
+    private HttpClient client = HttpClient.newHttpClient();
 
-	@Override
-	public List<Long> recommendProducts(Long userid, List<OrderItem> currentItems)
-			throws UnsupportedOperationException {
-		try {
-			return recommender.recommendProducts(userid, currentItems);
-		} catch (UseFallBackException e) {
-			// a UseFallBackException is usually ignored (as it is conceptual and might
-			// occur quite often)
-			LOG.trace("Executing " + recommender.getClass().getName()
-					+ " as recommender failed. Using fallback recommender. Reason:\n" + e.getMessage());
-			return fallbackrecommender.recommendProducts(userid, currentItems);
-		} catch (UnsupportedOperationException e) {
-			// if algorithm is not yet trained, we throw the error
-			LOG.error("Executing " + recommender.getClass().getName()
-					+ " threw an UnsupportedOperationException. The recommender was not finished with training.");
-			throw e;
-		} catch (Exception e) {
-			// any other exception is just reported
-			LOG.warn("Executing " + recommender.getClass().getName()
-					+ " threw an unexpected error. Using fallback recommender. Reason:\n" + e.getMessage());
-			return fallbackrecommender.recommendProducts(userid, currentItems);
-		}
-	}
+    private HttpRequest builderHttp(Long userid) {
+        return HttpRequest.newBuilder().uri(URI.create("http://localhost:8089/api/decision/1?idRefList=" + userid.toString())).build();
+    }
 
-	/**
-	 * Returns the instance of this Singleton or creates a new one, if this is the
-	 * first call of this method.
-	 * 
-	 * @return The instance of this class.
-	 */
-	public static synchronized RecommenderSelector getInstance() {
-		if (instance == null) {
-			 instance = new RecommenderSelector();
-		}
-		return instance;
-	}
+    private HttpResponse sendReq(Long userid) throws InterruptedException, IOException {
+        return client.send(builderHttp(userid), HttpResponse.BodyHandlers.ofString());
+    }
 
-	/*
+    private boolean getConsent(Long userid) throws InterruptedException, IOException {
+        JSONObject myObject = new JSONObject(sendReq(userid).body());
+        return myObject.getBoolean(userid.toString());
+    }
+
+    /**
+     * Private Constructor.
+     */
+    private RecommenderSelector() {
+        fallbackrecommender = new PopularityBasedRecommender();
+        try {
+            String recommendername = (String) new InitialContext().lookup("java:comp/env/recommenderAlgorithm");
+            // if a specific algorithm is set, we can use that algorithm
+            if (recommenders.containsKey(recommendername)) {
+                try {
+                    recommender = recommenders.get(recommendername).getDeclaredConstructor().newInstance();
+                } catch (IllegalArgumentException e) {
+                    e.printStackTrace();
+                } catch (InvocationTargetException e) {
+                    e.printStackTrace();
+                } catch (NoSuchMethodException e) {
+                    e.printStackTrace();
+                } catch (SecurityException e) {
+                    e.printStackTrace();
+                }
+            } else {
+                LOG.warn("Recommendername: " + recommendername
+                        + " was not found. Using default recommender (SlopeOneRecommeder).");
+                try {
+                    recommender = DEFAULT_RECOMMENDER.getDeclaredConstructor().newInstance();
+                } catch (IllegalArgumentException e) {
+                    e.printStackTrace();
+                } catch (InvocationTargetException e) {
+                    e.printStackTrace();
+                } catch (NoSuchMethodException e) {
+                    e.printStackTrace();
+                } catch (SecurityException e) {
+                    e.printStackTrace();
+                }
+            }
+        } catch (InstantiationException | IllegalAccessException e) {
+            // if creating a new instance fails
+            e.printStackTrace();
+            LOG.warn("Could not create an instance of the requested recommender. Using fallback.");
+            recommender = fallbackrecommender;
+        } catch (NamingException e) {
+            // if nothing was set
+            LOG.info("Recommender not set. Using default recommender (SlopeOneRecommeder).");
+            try {
+                try {
+                    recommender = DEFAULT_RECOMMENDER.getDeclaredConstructor().newInstance();
+                } catch (IllegalArgumentException e1) {
+                    e1.printStackTrace();
+                } catch (InvocationTargetException e1) {
+                    e1.printStackTrace();
+                } catch (NoSuchMethodException e1) {
+                    e1.printStackTrace();
+                } catch (SecurityException e1) {
+                    e1.printStackTrace();
+                }
+            } catch (InstantiationException | IllegalAccessException e1) {
+                // also the default algorithm could fail
+                e1.printStackTrace();
+                LOG.warn("Could not create an instance of DEFAULT_RECOMMENDER " + DEFAULT_RECOMMENDER.getName() + ".");
+                recommender = fallbackrecommender;
+            }
+        }
+    }
+
+    @Override
+    public List<Long> recommendProducts(Long userid, List<OrderItem> currentItems)
+            throws UnsupportedOperationException {
+        boolean canUse;
+        try {
+            canUse = getConsent(userid);
+        } catch (InterruptedException | IOException ex) {
+            LOG.trace("Executing " + recommender.getClass().getName()
+                    + " with getConsent result in an error. Reason:\n" + e.getMessage());
+            return new ArrayList<>();
+        }
+        try {
+            if (canUse) {
+                return recommender.recommendProducts(userid, currentItems);
+            } else {
+                return new ArrayList<>();
+            }
+        } catch (UseFallBackException e) {
+            // a UseFallBackException is usually ignored (as it is conceptual and might
+            // occur quite often)
+            LOG.trace("Executing " + recommender.getClass().getName()
+                    + " as recommender failed. Using fallback recommender. Reason:\n" + e.getMessage());
+            if (canUse) {
+                return fallbackrecommender.recommendProducts(userid, currentItems);
+            } else {
+                return new ArrayList<>();
+            }
+        } catch (UnsupportedOperationException e) {
+            // if algorithm is not yet trained, we throw the error
+            LOG.error("Executing " + recommender.getClass().getName()
+                    + " threw an UnsupportedOperationException. The recommender was not finished with training.");
+            throw e;
+        } catch (Exception e) {
+            // any other exception is just reported
+            LOG.warn("Executing " + recommender.getClass().getName()
+                    + " threw an unexpected error. Using fallback recommender. Reason:\n" + e.getMessage());
+            if (canUse) {
+                return fallbackrecommender.recommendProducts(userid, currentItems);
+            } else {
+                return new ArrayList<>();
+            }
+
+        }
+    }
+
+    /**
+     * Returns the instance of this Singleton or creates a new one, if this is
+     * the first call of this method.
+     *
+     * @return The instance of this class.
+     */
+    public static synchronized RecommenderSelector getInstance() {
+        if (instance == null) {
+            instance = new RecommenderSelector();
+        }
+        return instance;
+    }
+
+    /*
 	 * (non-Javadoc)
 	 * 
 	 * @see
 	 * tools.descartes.teastore.recommender.IRecommender#train(java.util.List,
 	 * java.util.List)
-	 */
-	@Override
-	public void train(List<OrderItem> orderItems, List<Order> orders) {
-		recommender.train(orderItems, orders);
-		fallbackrecommender.train(orderItems, orders);
-	}
+     */
+    @Override
+    public void train(List<OrderItem> orderItems, List<Order> orders) {
+        recommender.train(orderItems, orders);
+        fallbackrecommender.train(orderItems, orders);
+    }
 
 }
